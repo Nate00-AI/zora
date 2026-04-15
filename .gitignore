@@ -1,0 +1,29 @@
+# Environment
+.env
+.env.*
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# ChromaDB (local vector store — not committed)
+chroma_db/
+
+# RAG document metadata (regenerated from uploads)
+rag_documents.json
+
+# Node / Next.js
+zora-chat/node_modules/
+zora-chat/.next/
+zora-chat/out/
+
+# OS
+.DS_Store
+Thumbs.db
+

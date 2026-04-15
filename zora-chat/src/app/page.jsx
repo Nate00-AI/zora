@@ -1,0 +1,211 @@
+'use client';
+
+import { useState, useEffect, useCallback } from 'react';
+import Sidebar from '@/components/Sidebar';
+import ChatWindow from '@/components/ChatWindow';
+import MessageInput from '@/components/MessageInput';
+import SettingsPanel from '@/components/SettingsPanel';
+import KnowledgeBase from '@/components/KnowledgeBase';
+
+const WELCOME_MESSAGE = {
+  id: 'welcome',
+  role: 'assistant',
+  content: "Hi there! I'm **Zora**, your AI assistant. Ask me anything — I'm here to help! 👋",
+  timestamp: new Date().toISOString(),
+};
+
+async function sendMessageToAPI(message, history = [], includeRag = false) {
+  const response = await fetch('http://localhost:8000/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, history, include_rag: includeRag }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail ?? `Server error ${response.status}`);
+  }
+
+  return response.json(); // { content, sources }
+}
+
+export default function HomePage() {
+  const [messages, setMessages]     = useState([WELCOME_MESSAGE]);
+  const [isTyping, setIsTyping]     = useState(false);
+  const [activeView, setActiveView] = useState('chat'); // 'chat' | 'settings'
+  const [sidebarOpen, setSidebarOpen]   = useState(false); // mobile toggle
+  const [ragEnabled, setRagEnabled]     = useState(false);
+  const [ragDocuments, setRagDocuments] = useState([]);
+
+  const chatTitle = (() => {
+    const firstUser = messages.find((m) => m.role === 'user');
+    if (!firstUser) return 'New conversation';
+    const text = firstUser.content.trim();
+    return text.length > 28 ? text.slice(0, 28).trimEnd() + '…' : text;
+  })();
+
+  // ── Persist chat history ──────────────────────────────────────────────────
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('zora-chat-v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) setMessages(parsed);
+      }
+    } catch {
+      // use default welcome message
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('zora-chat-v1', JSON.stringify(messages));
+    } catch {
+      // ignore
+    }
+  }, [messages]);
+
+  // ── Persist RAG toggle ────────────────────────────────────────────────────
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('zora-rag-enabled');
+      if (saved !== null) setRagEnabled(JSON.parse(saved));
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem('zora-rag-enabled', JSON.stringify(ragEnabled)); }
+    catch { /* ignore */ }
+  }, [ragEnabled]);
+
+  // ── Load RAG documents on mount ───────────────────────────────────────────
+  useEffect(() => {
+    fetch('http://localhost:8000/api/rag/documents')
+      .then((r) => r.json())
+      .then((data) => setRagDocuments(data.documents ?? []))
+      .catch(() => { /* backend may not be running */ });
+  }, []);
+
+  // ── Send a message ────────────────────────────────────────────────────────
+  const handleSendMessage = useCallback(async (content) => {
+    if (!content.trim() || isTyping) return;
+
+    const userMsg = {
+      id:        `user-${Date.now()}`,
+      role:      'user',
+      content:   content.trim(),
+      timestamp: new Date().toISOString(),
+    };
+
+    setMessages((prev) => [...prev, userMsg]);
+    setIsTyping(true);
+
+    try {
+      // Build history from current messages (exclude welcome, map to {role, content})
+      const history = messages
+        .filter((m) => m.id !== 'welcome')
+        .map(({ role, content: c }) => ({ role, content: c }));
+
+      const { content: text, sources } = await sendMessageToAPI(content, history, ragEnabled);
+      let botContent = text;
+      if (sources && sources.length > 0) {
+        botContent += `\n\n---\n*Sources: ${sources.join(', ')}*`;
+      }
+      setMessages((prev) => [
+        ...prev,
+        { id: `bot-${Date.now()}`, role: 'assistant', content: botContent, timestamp: new Date().toISOString() },
+      ]);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        { id: `err-${Date.now()}`, role: 'assistant', content: 'Sorry, something went wrong. Please try again.', timestamp: new Date().toISOString() },
+      ]);
+    } finally {
+      setIsTyping(false);
+    }
+  }, [isTyping, ragEnabled]);
+
+  // ── Sidebar actions ───────────────────────────────────────────────────────
+  const handleGoToChat = useCallback(() => {
+    setActiveView('chat');
+    setSidebarOpen(false);
+  }, []);
+
+  const handleNewChat = useCallback(() => {
+    setMessages([{ ...WELCOME_MESSAGE, id: `welcome-${Date.now()}`, timestamp: new Date().toISOString() }]);
+    setActiveView('chat');
+    setSidebarOpen(false);
+  }, []);
+
+  const handleClearChat = useCallback(() => {
+    setMessages([]);
+    setSidebarOpen(false);
+  }, []);
+
+  const handleOpenSettings = useCallback(() => {
+    setActiveView('settings');
+    setSidebarOpen(false);
+  }, []);
+
+  const handleOpenKnowledgeBase = useCallback(() => {
+    setActiveView('knowledge-base');
+    setSidebarOpen(false);
+  }, []);
+
+  return (
+    <div className="flex w-full h-full overflow-hidden">
+      {/* Mobile sidebar backdrop */}
+      {sidebarOpen && (
+        <div
+          className="sidebar-overlay lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      <Sidebar
+        activeView={activeView}
+        chatTitle={chatTitle}
+        onGoToChat={handleGoToChat}
+        onNewChat={handleNewChat}
+        onClearChat={handleClearChat}
+        onOpenSettings={handleOpenSettings}
+        onOpenKnowledgeBase={handleOpenKnowledgeBase}
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+      />
+
+      {/* Main panel */}
+      <div className="flex flex-col flex-1 min-w-0 h-full overflow-hidden">
+        {activeView === 'chat' ? (
+          <>
+            <ChatWindow
+              messages={messages}
+              isTyping={isTyping}
+              onMenuToggle={() => setSidebarOpen(true)}
+            />
+            <MessageInput
+              onSend={handleSendMessage}
+              disabled={isTyping}
+              ragEnabled={ragEnabled}
+              onToggleRag={() => setRagEnabled((v) => !v)}
+              docCount={ragDocuments.length}
+            />
+          </>
+        ) : activeView === 'knowledge-base' ? (
+          <KnowledgeBase
+            onBack={() => setActiveView('chat')}
+            ragDocuments={ragDocuments}
+            setRagDocuments={setRagDocuments}
+          />
+        ) : (
+          <SettingsPanel
+            onBack={() => setActiveView('chat')}
+            ragEnabled={ragEnabled}
+            setRagEnabled={setRagEnabled}
+          />
+        )}
+      </div>
+    </div>
+  );
+}

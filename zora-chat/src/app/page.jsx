@@ -14,11 +14,11 @@ const WELCOME_MESSAGE = {
   timestamp: new Date().toISOString(),
 };
 
-async function sendMessageToAPI(message, history = [], includeRag = false) {
+async function sendMessageToAPI(message, history = [], includeRag = false, temperature = 0.7) {
   const response = await fetch('http://localhost:8000/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, history, include_rag: includeRag }),
+    body: JSON.stringify({ message, history, include_rag: includeRag, temperature }),
   });
 
   if (!response.ok) {
@@ -26,7 +26,7 @@ async function sendMessageToAPI(message, history = [], includeRag = false) {
     throw new Error(err.detail ?? `Server error ${response.status}`);
   }
 
-  return response.json(); // { content, sources }
+  return response.json(); // { content, sources, prompt_tokens, completion_tokens }
 }
 
 export default function HomePage() {
@@ -36,6 +36,8 @@ export default function HomePage() {
   const [sidebarOpen, setSidebarOpen]   = useState(false); // mobile toggle
   const [ragEnabled, setRagEnabled]     = useState(false);
   const [ragDocuments, setRagDocuments] = useState([]);
+  const [tokenStats, setTokenStats]     = useState({ promptTokens: 0, completionTokens: 0 });
+  const [temperature, setTemperature]   = useState(0.7);
 
   const chatTitle = (() => {
     const firstUser = messages.find((m) => m.role === 'user');
@@ -78,6 +80,19 @@ export default function HomePage() {
     catch { /* ignore */ }
   }, [ragEnabled]);
 
+  // ── Persist temperature ──────────────────────────────────────────────────
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('zora-temperature');
+      if (saved !== null) setTemperature(parseFloat(saved));
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem('zora-temperature', String(temperature)); }
+    catch { /* ignore */ }
+  }, [temperature]);
+
   // ── Load RAG documents on mount ───────────────────────────────────────────
   useEffect(() => {
     fetch('http://localhost:8000/api/rag/documents')
@@ -106,11 +121,15 @@ export default function HomePage() {
         .filter((m) => m.id !== 'welcome')
         .map(({ role, content: c }) => ({ role, content: c }));
 
-      const { content: text, sources } = await sendMessageToAPI(content, history, ragEnabled);
+      const { content: text, sources, prompt_tokens, completion_tokens } = await sendMessageToAPI(content, history, ragEnabled, temperature);
       let botContent = text;
       if (sources && sources.length > 0) {
         botContent += `\n\n---\n*Sources: ${sources.join(', ')}*`;
       }
+      setTokenStats((prev) => ({
+        promptTokens:     prev.promptTokens     + (prompt_tokens     ?? 0),
+        completionTokens: prev.completionTokens + (completion_tokens ?? 0),
+      }));
       setMessages((prev) => [
         ...prev,
         { id: `bot-${Date.now()}`, role: 'assistant', content: botContent, timestamp: new Date().toISOString() },
@@ -183,6 +202,7 @@ export default function HomePage() {
               messages={messages}
               isTyping={isTyping}
               onMenuToggle={() => setSidebarOpen(true)}
+              tokenStats={tokenStats}
             />
             <MessageInput
               onSend={handleSendMessage}
@@ -203,6 +223,8 @@ export default function HomePage() {
             onBack={() => setActiveView('chat')}
             ragEnabled={ragEnabled}
             setRagEnabled={setRagEnabled}
+            temperature={temperature}
+            setTemperature={setTemperature}
           />
         )}
       </div>

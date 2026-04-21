@@ -13,7 +13,7 @@ const ACCENT_PRESETS = [
   { label: 'Red',    value: '#ef4444' },
 ];
 
-export default function SettingsPanel({ onBack, ragEnabled, setRagEnabled }) {
+export default function SettingsPanel({ onBack, ragEnabled, setRagEnabled, temperature = 0.7, setTemperature }) {
   const {
     themeMode, setThemeMode,
     accentColor, setAccentColor,
@@ -206,6 +206,40 @@ export default function SettingsPanel({ onBack, ragEnabled, setRagEnabled }) {
               >
                 {ragEnabled ? <ToggleRight size={32} /> : <ToggleLeft size={32} />}
               </button>
+            </div>
+          </div>
+        </section>
+
+        {/* ── Model ────────────────────────────────────────────────────────── */}
+        <section>
+          <SectionLabel>Model</SectionLabel>
+          <div
+            className="p-4 rounded-xl space-y-3"
+            style={{ background: 'var(--bg-sidebar)', border: '1px solid var(--border)' }}
+          >
+            <div className="flex items-center justify-between">
+              <FieldLabel>Temperature</FieldLabel>
+              <span
+                className="text-sm font-mono font-semibold px-2 py-0.5 rounded-lg"
+                style={{ background: 'var(--accent-subtle)', color: 'var(--accent)' }}
+              >
+                {temperature.toFixed(1)}
+              </span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="2"
+              step="0.1"
+              value={temperature}
+              onChange={(e) => setTemperature?.(parseFloat(e.target.value))}
+              className="w-full"
+              aria-label="Model temperature"
+            />
+            <div className="flex justify-between text-xs" style={{ color: 'var(--text-muted)' }}>
+              <span>0 — Precise</span>
+              <span>1 — Balanced</span>
+              <span>2 — Creative</span>
             </div>
           </div>
         </section>

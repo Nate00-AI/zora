@@ -60,6 +60,7 @@ class ChatRequest(BaseModel):
     message: str
     history: list[Message] = []
     include_rag: bool = False
+    temperature: float = 0.7
 
     @field_validator("message")
     @classmethod
@@ -68,9 +69,18 @@ class ChatRequest(BaseModel):
             raise ValueError("Message must be at least 2 characters.")
         return v.strip()
 
+    @field_validator("temperature")
+    @classmethod
+    def temperature_range(cls, v: float) -> float:
+        if not (0.0 <= v <= 2.0):
+            raise ValueError("Temperature must be between 0.0 and 2.0.")
+        return round(v, 2)
+
 class ChatResponse(BaseModel):
     content: str
     sources: list[str] = []
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 class DocumentMeta(BaseModel):
     doc_id: str
@@ -87,8 +97,8 @@ class DocumentsResponse(BaseModel):
     documents: list[DocumentMeta]
 
 # ── RAG helpers ───────────────────────────────────────────────────────────────
-CHUNK_TOKENS   = 800
-OVERLAP_TOKENS = 100
+CHUNK_TOKENS   = 250
+OVERLAP_TOKENS = 30
 EMBED_MODEL    = "text-embedding-3-small"
 
 def chunk_text(text: str) -> list[str]:
@@ -175,10 +185,16 @@ def delete_document(doc_id: str):
     return {"ok": True}
 
 # ── POST /api/chat ────────────────────────────────────────────────────────────
+RAG_SIMILARITY_THRESHOLD = 1.0   # squared L2 distance (ChromaDB default); ≈ cosine_sim > 0.5
+RAG_CONTEXT_TOKEN_BUDGET = 1500  # max tokens injected as RAG context
+HISTORY_LIMIT_DEFAULT   = 10
+HISTORY_LIMIT_RAG        = 4    # fewer history turns when RAG adds context
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
+    history_limit = HISTORY_LIMIT_RAG if req.include_rag else HISTORY_LIMIT_DEFAULT
     messages = [m.model_dump() for m in req.history] + [{"role": "user", "content": req.message}]
-    messages = messages[-10:]  # Keep only the last 10 messages
+    messages = messages[-history_limit:]
     sources: list[str] = []
 
     if req.include_rag and collection.count() > 0:
@@ -191,31 +207,50 @@ async def chat(req: ChatRequest):
             )
             chunks    = results["documents"][0] if results["documents"] else []
             metadatas = results["metadatas"][0]  if results["metadatas"]  else []
+
             if chunks:
-                context_text = "\n\n".join(chunks)
+                # Cap context to token budget
+                enc = tiktoken.get_encoding("cl100k_base")
+                kept: list[str] = []
+                total_tokens = 0
+                for chunk in chunks:
+                    t = len(enc.encode(chunk))
+                    if total_tokens + t > RAG_CONTEXT_TOKEN_BUDGET:
+                        break
+                    kept.append(chunk)
+                    total_tokens += t
+
+                context_text = "\n\n".join(kept)
                 system_msg = {
                     "role":    "system",
                     "content": (
-                        "Use the following context to answer the user's question. "
-                        "If the context is not relevant, answer from your general knowledge.\n\n"
-                        f"{context_text}"
+                        "Use the following context from the knowledge base to answer the user's question. "
+                        "If the context is not relevant to the question, answer from your general knowledge.\n\n"
+                        f"Context:\n{context_text}"
                     ),
                 }
                 messages = [system_msg] + messages
                 sources = list({m["file_name"] for m in metadatas if "file_name" in m})
-        except Exception:
-            pass  # fall back to normal chat silently
+        except Exception as e:
+            print(f"[RAG] Error during retrieval: {e}")
 
     try:
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=messages,
+            temperature=req.temperature,
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"OpenAI error: {str(e)}")
 
     content = response.choices[0].message.content.strip()
-    return ChatResponse(content=content, sources=sources)
+    usage = response.usage
+    return ChatResponse(
+        content=content,
+        sources=sources,
+        prompt_tokens=usage.prompt_tokens if usage else 0,
+        completion_tokens=usage.completion_tokens if usage else 0,
+    )
 
 
 # ── Health check ──────────────────────────────────────────────────────────────

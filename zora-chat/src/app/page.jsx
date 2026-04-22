@@ -6,6 +6,7 @@ import ChatWindow from '@/components/ChatWindow';
 import MessageInput from '@/components/MessageInput';
 import SettingsPanel from '@/components/SettingsPanel';
 import KnowledgeBase from '@/components/KnowledgeBase';
+import Calendar from '@/components/Calendar';
 
 const WELCOME_MESSAGE = {
   id: 'welcome',
@@ -14,11 +15,11 @@ const WELCOME_MESSAGE = {
   timestamp: new Date().toISOString(),
 };
 
-async function sendMessageToAPI(message, history = [], includeRag = false, temperature = 0.7) {
+async function sendMessageToAPI(message, history = [], includeRag = false, temperature = 0.7, model = 'gpt-3.5-turbo') {
   const response = await fetch('http://localhost:8000/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, history, include_rag: includeRag, temperature }),
+    body: JSON.stringify({ message, history, include_rag: includeRag, temperature, model }),
   });
 
   if (!response.ok) {
@@ -26,7 +27,7 @@ async function sendMessageToAPI(message, history = [], includeRag = false, tempe
     throw new Error(err.detail ?? `Server error ${response.status}`);
   }
 
-  return response.json(); // { content, sources, prompt_tokens, completion_tokens }
+  return response.json(); // { content, sources, prompt_tokens, completion_tokens, calendar_actions }
 }
 
 export default function HomePage() {
@@ -36,8 +37,10 @@ export default function HomePage() {
   const [sidebarOpen, setSidebarOpen]   = useState(false); // mobile toggle
   const [ragEnabled, setRagEnabled]     = useState(false);
   const [ragDocuments, setRagDocuments] = useState([]);
-  const [tokenStats, setTokenStats]     = useState({ promptTokens: 0, completionTokens: 0 });
-  const [temperature, setTemperature]   = useState(0.7);
+  const [tokenStats, setTokenStats]       = useState({ promptTokens: 0, completionTokens: 0 });
+  const [temperature, setTemperature]     = useState(0.7);
+  const [selectedModel, setSelectedModel] = useState('gpt-3.5-turbo');
+  const [calendarEvents, setCalendarEvents] = useState([]);
 
   const chatTitle = (() => {
     const firstUser = messages.find((m) => m.role === 'user');
@@ -93,6 +96,19 @@ export default function HomePage() {
     catch { /* ignore */ }
   }, [temperature]);
 
+  // ── Persist selected model ───────────────────────────────────────────────
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('zora-model');
+      if (saved) setSelectedModel(saved);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem('zora-model', selectedModel); }
+    catch { /* ignore */ }
+  }, [selectedModel]);
+
   // ── Load RAG documents on mount ───────────────────────────────────────────
   useEffect(() => {
     fetch('http://localhost:8000/api/rag/documents')
@@ -100,7 +116,15 @@ export default function HomePage() {
       .then((data) => setRagDocuments(data.documents ?? []))
       .catch(() => { /* backend may not be running */ });
   }, []);
+  // ── Load calendar events on mount ──────────────────────────────────────────
+  const loadCalendarEvents = useCallback(() => {
+    fetch('http://localhost:8000/api/calendar/events')
+      .then((r) => r.json())
+      .then((data) => setCalendarEvents(data.events ?? []))
+      .catch(() => { /* backend may not be running */ });
+  }, []);
 
+  useEffect(() => { loadCalendarEvents(); }, [loadCalendarEvents]);
   // ── Send a message ────────────────────────────────────────────────────────
   const handleSendMessage = useCallback(async (content) => {
     if (!content.trim() || isTyping) return;
@@ -121,10 +145,13 @@ export default function HomePage() {
         .filter((m) => m.id !== 'welcome')
         .map(({ role, content: c }) => ({ role, content: c }));
 
-      const { content: text, sources, prompt_tokens, completion_tokens } = await sendMessageToAPI(content, history, ragEnabled, temperature);
+      const { content: text, sources, prompt_tokens, completion_tokens, calendar_actions } = await sendMessageToAPI(content, history, ragEnabled, temperature, selectedModel);
       let botContent = text;
       if (sources && sources.length > 0) {
         botContent += `\n\n---\n*Sources: ${sources.join(', ')}*`;
+      }
+      if (calendar_actions && calendar_actions.length > 0) {
+        loadCalendarEvents();
       }
       setTokenStats((prev) => ({
         promptTokens:     prev.promptTokens     + (prompt_tokens     ?? 0),
@@ -171,6 +198,11 @@ export default function HomePage() {
     setSidebarOpen(false);
   }, []);
 
+  const handleOpenCalendar = useCallback(() => {
+    setActiveView('calendar');
+    setSidebarOpen(false);
+  }, []);
+
   return (
     <div className="flex w-full h-full overflow-hidden">
       {/* Mobile sidebar backdrop */}
@@ -190,6 +222,7 @@ export default function HomePage() {
         onClearChat={handleClearChat}
         onOpenSettings={handleOpenSettings}
         onOpenKnowledgeBase={handleOpenKnowledgeBase}
+        onOpenCalendar={handleOpenCalendar}
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
       />
@@ -218,6 +251,12 @@ export default function HomePage() {
             ragDocuments={ragDocuments}
             setRagDocuments={setRagDocuments}
           />
+        ) : activeView === 'calendar' ? (
+          <Calendar
+            onBack={() => setActiveView('chat')}
+            events={calendarEvents}
+            loadEvents={loadCalendarEvents}
+          />
         ) : (
           <SettingsPanel
             onBack={() => setActiveView('chat')}
@@ -225,6 +264,8 @@ export default function HomePage() {
             setRagEnabled={setRagEnabled}
             temperature={temperature}
             setTemperature={setTemperature}
+            selectedModel={selectedModel}
+            setSelectedModel={setSelectedModel}
           />
         )}
       </div>

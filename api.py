@@ -47,7 +47,7 @@ app = FastAPI(title="Zora API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],  # Next.js dev server
-    allow_methods=["POST", "GET", "DELETE"],
+    allow_methods=["POST", "GET", "DELETE", "PUT"],
     allow_headers=["Content-Type"],
 )
 
@@ -56,11 +56,14 @@ class Message(BaseModel):
     role: str
     content: str
 
+ALLOWED_MODELS = {"gpt-3.5-turbo", "gpt-4o-mini", "gpt-4o"}
+
 class ChatRequest(BaseModel):
     message: str
     history: list[Message] = []
     include_rag: bool = False
     temperature: float = 0.7
+    model: str = "gpt-3.5-turbo"
 
     @field_validator("message")
     @classmethod
@@ -76,11 +79,19 @@ class ChatRequest(BaseModel):
             raise ValueError("Temperature must be between 0.0 and 2.0.")
         return round(v, 2)
 
+    @field_validator("model")
+    @classmethod
+    def model_allowed(cls, v: str) -> str:
+        if v not in ALLOWED_MODELS:
+            raise ValueError(f"Model must be one of: {', '.join(sorted(ALLOWED_MODELS))}")
+        return v
+
 class ChatResponse(BaseModel):
     content: str
     sources: list[str] = []
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    calendar_actions: list[dict] = []
 
 class DocumentMeta(BaseModel):
     doc_id: str
@@ -184,6 +195,119 @@ def delete_document(doc_id: str):
     save_documents(docs)
     return {"ok": True}
 
+# ── Calendar helpers ─────────────────────────────────────────────────────────
+CALENDAR_FILE = Path("./calendar_events.json")
+
+def load_calendar() -> list[dict]:
+    if CALENDAR_FILE.exists():
+        try:
+            return json.loads(CALENDAR_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return []
+    return []
+
+def save_calendar(events: list[dict]) -> None:
+    CALENDAR_FILE.write_text(json.dumps(events, indent=2, ensure_ascii=False), encoding="utf-8")
+
+class CreateEventRequest(BaseModel):
+    title: str
+    date: str               # YYYY-MM-DD
+    time: str               # HH:MM
+    description: str = ""
+    reminder_minutes: int = 0
+
+    @field_validator("title")
+    @classmethod
+    def title_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Title cannot be empty.")
+        return v.strip()
+
+class CalendarEventModel(BaseModel):
+    id: str
+    title: str
+    date: str
+    time: str
+    description: str = ""
+    reminder_minutes: int = 0
+    created_at: str
+
+class CalendarEventsResponse(BaseModel):
+    events: list[CalendarEventModel]
+
+# ── GET /api/calendar/events ──────────────────────────────────────────────────
+@app.get("/api/calendar/events", response_model=CalendarEventsResponse)
+def get_calendar_events():
+    return CalendarEventsResponse(events=load_calendar())
+
+# ── POST /api/calendar/events ─────────────────────────────────────────────────
+@app.post("/api/calendar/events", response_model=CalendarEventModel)
+def create_calendar_event(req: CreateEventRequest):
+    event = {
+        "id":               str(uuid.uuid4()),
+        "title":            req.title,
+        "date":             req.date,
+        "time":             req.time,
+        "description":      req.description,
+        "reminder_minutes": req.reminder_minutes,
+        "created_at":       datetime.now(timezone.utc).isoformat(),
+    }
+    events = load_calendar()
+    events.append(event)
+    save_calendar(events)
+    return event
+
+# ── DELETE /api/calendar/events/{event_id} ────────────────────────────────────
+@app.delete("/api/calendar/events/{event_id}")
+def delete_calendar_event(event_id: str):
+    events = [e for e in load_calendar() if e["id"] != event_id]
+    save_calendar(events)
+    return {"ok": True}
+
+# ── Calendar tools for function calling ─────────────────────────────────────
+CALENDAR_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "add_calendar_event",
+            "description": "Add a meeting or event to the user's calendar.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title":            {"type": "string",  "description": "Event title"},
+                    "date":             {"type": "string",  "description": "Date in YYYY-MM-DD format"},
+                    "time":             {"type": "string",  "description": "Time in HH:MM 24-hour format"},
+                    "description":      {"type": "string",  "description": "Optional details or agenda"},
+                    "reminder_minutes": {"type": "integer", "description": "Minutes before event to remind (0 = none)"},
+                },
+                "required": ["title", "date", "time"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_calendar_event",
+            "description": "Remove a calendar event by its id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_id": {"type": "string", "description": "The id of the event to delete"},
+                },
+                "required": ["event_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_calendar_events",
+            "description": "List all calendar events so you can find an event to delete or reference by title/date.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+]
+
 # ── POST /api/chat ────────────────────────────────────────────────────────────
 RAG_SIMILARITY_THRESHOLD = 1.0   # squared L2 distance (ChromaDB default); ≈ cosine_sim > 0.5
 RAG_CONTEXT_TOKEN_BUDGET = 1500  # max tokens injected as RAG context
@@ -234,22 +358,75 @@ async def chat(req: ChatRequest):
         except Exception as e:
             print(f"[RAG] Error during retrieval: {e}")
 
+    # Prepend a system message so the model knows today's date for relative references
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    messages = [{"role": "system", "content": f"Today's date is {today_str}. You are Zora, a helpful AI assistant. You can manage the user's calendar using the available tools."}] + messages
+
+    calendar_actions: list[dict] = []
+    prompt_tokens = 0
+    completion_tokens = 0
+
     try:
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model=req.model,
             messages=messages,
+            tools=CALENDAR_TOOLS,
+            tool_choice="auto",
             temperature=req.temperature,
         )
+
+        # Tool-use loop — runs until the model stops requesting tool calls
+        while response.choices[0].finish_reason == "tool_calls":
+            tool_calls = response.choices[0].message.tool_calls
+            messages.append(response.choices[0].message)
+            if response.usage:
+                prompt_tokens     += response.usage.prompt_tokens
+                completion_tokens += response.usage.completion_tokens
+
+            for tc in tool_calls:
+                args = json.loads(tc.function.arguments)
+                if tc.function.name == "add_calendar_event":
+                    event_req = CreateEventRequest(**args)
+                    new_event = create_calendar_event(event_req)
+                    result = json.dumps({"ok": True, "event_id": new_event["id"]})
+                    calendar_actions.append({"action": "added", "title": args.get("title")})
+                elif tc.function.name == "delete_calendar_event":
+                    delete_calendar_event(args["event_id"])
+                    result = json.dumps({"ok": True})
+                    calendar_actions.append({"action": "deleted", "event_id": args["event_id"]})
+                elif tc.function.name == "list_calendar_events":
+                    result = json.dumps({"events": load_calendar()})
+                else:
+                    result = json.dumps({"error": "unknown tool"})
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result,
+                })
+
+            response = client.chat.completions.create(
+                model=req.model,
+                messages=messages,
+                tools=CALENDAR_TOOLS,
+                tool_choice="auto",
+                temperature=req.temperature,
+            )
+
+        if response.usage:
+            prompt_tokens     += response.usage.prompt_tokens
+            completion_tokens += response.usage.completion_tokens
+
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"OpenAI error: {str(e)}")
 
-    content = response.choices[0].message.content.strip()
-    usage = response.usage
+    content = response.choices[0].message.content or ""
     return ChatResponse(
-        content=content,
+        content=content.strip(),
         sources=sources,
-        prompt_tokens=usage.prompt_tokens if usage else 0,
-        completion_tokens=usage.completion_tokens if usage else 0,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        calendar_actions=calendar_actions,
     )
 
 

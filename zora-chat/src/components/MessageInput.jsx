@@ -1,12 +1,14 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
-import { ArrowUp, BookOpen } from 'lucide-react';
+import { useState, useRef, useCallback, useEffect } from 'react';
+import { ArrowUp, BookOpen, Mic, MicOff } from 'lucide-react';
 
 export default function MessageInput({ onSend, disabled, ragEnabled, onToggleRag, docCount = 0 }) {
-  const [value, setValue]   = useState('');
-  const textareaRef         = useRef(null);
-  const isEmpty             = !value.trim();
+  const [value, setValue]         = useState('');
+  const [isListening, setIsListening] = useState(false);
+  const textareaRef               = useRef(null);
+  const recognitionRef            = useRef(null);
+  const isEmpty                   = !value.trim();
 
   /* ── Auto-grow textarea ─────────────────────────────────────────────── */
   const handleInput = useCallback((e) => {
@@ -34,6 +36,41 @@ export default function MessageInput({ onSend, disabled, ragEnabled, onToggleRag
       submitMessage();
     }
   }, [submitMessage]);
+
+  /* ── Voice input (Web Speech API) ──────────────────────────────────── */
+  const toggleListening = useCallback(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (e) => {
+      const transcript = e.results[0][0].transcript;
+      setIsListening(false);
+      onSend(transcript);
+    };
+    recognition.onerror = () => setIsListening(false);
+    recognition.onend   = () => setIsListening(false);
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setIsListening(true);
+  }, [isListening, onSend]);
+
+  const [hasSpeechInput, setHasSpeechInput] = useState(false);
+
+  useEffect(() => {
+    setHasSpeechInput(!!(window.SpeechRecognition || window.webkitSpeechRecognition));
+  }, []);
 
   const canSend = !isEmpty && !disabled;
 
@@ -83,6 +120,27 @@ export default function MessageInput({ onSend, disabled, ragEnabled, onToggleRag
               </span>
             )}
           </div>
+
+          {/* Mic button */}
+          {hasSpeechInput && (
+            <button
+              type="button"
+              onClick={toggleListening}
+              disabled={disabled}
+              aria-label={isListening ? 'Stop listening' : 'Start voice input'}
+              title={isListening ? 'Listening… click to stop' : 'Voice input'}
+              className="flex items-center justify-center w-8 h-8 rounded-xl shrink-0 mb-0.5 transition-all duration-150"
+              style={{
+                background: isListening ? 'var(--accent)' : 'transparent',
+                color:      isListening ? '#ffffff' : disabled ? 'var(--text-muted)' : 'var(--text-secondary)',
+                border:     isListening ? 'none' : '1px solid var(--border)',
+                cursor:     disabled ? 'not-allowed' : 'pointer',
+                animation:  isListening ? 'pulse 1.2s infinite' : 'none',
+              }}
+            >
+              {isListening ? <MicOff size={15} strokeWidth={2} /> : <Mic size={15} strokeWidth={2} />}
+            </button>
+          )}
 
           <textarea
             ref={textareaRef}

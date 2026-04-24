@@ -1,4 +1,4 @@
-# Kora Chat — AI Chat Interface
+# Zora Chat — AI Chat Interface
 
 A modern, minimalistic AI chatbot frontend built with **Next.js 14**, **React 18**, and **Tailwind CSS**.
 

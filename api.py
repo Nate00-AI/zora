@@ -58,12 +58,15 @@ class Message(BaseModel):
 
 ALLOWED_MODELS = {"gpt-3.5-turbo", "gpt-4o-mini", "gpt-4o"}
 
+ALLOWED_MODES = {"chat", "ask"}
+
 class ChatRequest(BaseModel):
     message: str
     history: list[Message] = []
     include_rag: bool = False
     temperature: float = 0.7
     model: str = "gpt-3.5-turbo"
+    mode: str = "chat"  # "chat" enables calendar tools; "ask" is read-only
 
     @field_validator("message")
     @classmethod
@@ -84,6 +87,13 @@ class ChatRequest(BaseModel):
     def model_allowed(cls, v: str) -> str:
         if v not in ALLOWED_MODELS:
             raise ValueError(f"Model must be one of: {', '.join(sorted(ALLOWED_MODELS))}")
+        return v
+
+    @field_validator("mode")
+    @classmethod
+    def mode_allowed(cls, v: str) -> str:
+        if v not in ALLOWED_MODES:
+            raise ValueError("Mode must be 'chat' or 'ask'.")
         return v
 
 class ChatResponse(BaseModel):
@@ -309,7 +319,7 @@ CALENDAR_TOOLS = [
 ]
 
 # ── POST /api/chat ────────────────────────────────────────────────────────────
-RAG_SIMILARITY_THRESHOLD = 1.0   # squared L2 distance (ChromaDB default); ≈ cosine_sim > 0.5
+RAG_SIMILARITY_THRESHOLD = 1.5   # squared L2 distance; ≈ cosine_sim > 0.25 (filters truly irrelevant chunks)
 RAG_CONTEXT_TOKEN_BUDGET = 1500  # max tokens injected as RAG context
 HISTORY_LIMIT_DEFAULT   = 10
 HISTORY_LIMIT_RAG        = 4    # fewer history turns when RAG adds context
@@ -321,61 +331,79 @@ async def chat(req: ChatRequest):
     messages = messages[-history_limit:]
     sources: list[str] = []
 
+    # Build the base system message (always present)
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    base_system = (
+        f"Today's date is {today_str}. "
+        "You are Zora, a helpful AI assistant. "
+        "You can manage the user's calendar using the available tools."
+    )
+
     if req.include_rag and collection.count() > 0:
         try:
             q_embed = embed_texts([req.message])[0]
             results = collection.query(
                 query_embeddings=[q_embed],
                 n_results=min(5, collection.count()),
-                include=["documents", "metadatas"],
+                include=["documents", "metadatas", "distances"],
             )
-            chunks    = results["documents"][0] if results["documents"] else []
-            metadatas = results["metadatas"][0]  if results["metadatas"]  else []
+            raw_chunks    = results["documents"][0] if results["documents"] else []
+            raw_metadatas = results["metadatas"][0]  if results["metadatas"]  else []
+            raw_distances = results["distances"][0]  if results["distances"]  else []
 
-            if chunks:
+            print(f"[RAG] query='{req.message[:60]}' distances={[round(d,4) for d in raw_distances]} threshold={RAG_SIMILARITY_THRESHOLD}")
+
+            # Filter out chunks that exceed the similarity threshold (too dissimilar)
+            relevant = [
+                (chunk, meta)
+                for chunk, meta, dist in zip(raw_chunks, raw_metadatas, raw_distances)
+                if dist <= RAG_SIMILARITY_THRESHOLD
+            ]
+
+            if relevant:
                 # Cap context to token budget
                 enc = tiktoken.get_encoding("cl100k_base")
                 kept: list[str] = []
+                kept_metas: list[dict] = []
                 total_tokens = 0
-                for chunk in chunks:
+                for chunk, meta in relevant:
                     t = len(enc.encode(chunk))
                     if total_tokens + t > RAG_CONTEXT_TOKEN_BUDGET:
                         break
                     kept.append(chunk)
+                    kept_metas.append(meta)
                     total_tokens += t
 
-                context_text = "\n\n".join(kept)
-                system_msg = {
-                    "role":    "system",
-                    "content": (
-                        "Use the following context from the knowledge base to answer the user's question. "
-                        "If the context is not relevant to the question, answer from your general knowledge.\n\n"
-                        f"Context:\n{context_text}"
-                    ),
-                }
-                messages = [system_msg] + messages
-                sources = list({m["file_name"] for m in metadatas if "file_name" in m})
+                if kept:
+                    context_text = "\n\n".join(kept)
+                    # Merge RAG context into the single system message so the model
+                    # treats it as primary instruction rather than a secondary message.
+                    base_system += (
+                        "\n\nYou have been provided with relevant excerpts from the user's "
+                        "knowledge base. Use them to answer accurately. Do not mention that "
+                        "you were given context unless the user asks.\n\n"
+                        f"Knowledge base context:\n{context_text}"
+                    )
+                    sources = list({m["file_name"] for m in kept_metas if "file_name" in m})
         except Exception as e:
             print(f"[RAG] Error during retrieval: {e}")
 
-    # Prepend a system message so the model knows today's date for relative references
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    messages = [{"role": "system", "content": f"Today's date is {today_str}. You are Zora, a helpful AI assistant. You can manage the user's calendar using the available tools."}] + messages
+    messages = [{"role": "system", "content": base_system}] + messages
 
     calendar_actions: list[dict] = []
     prompt_tokens = 0
     completion_tokens = 0
 
-    try:
-        response = client.chat.completions.create(
-            model=req.model,
-            messages=messages,
-            tools=CALENDAR_TOOLS,
-            tool_choice="auto",
-            temperature=req.temperature,
-        )
+    # Build kwargs shared by all completions calls; only attach tools in chat mode
+    create_kwargs: dict = {"model": req.model, "temperature": req.temperature}
+    if req.mode == "chat":
+        create_kwargs["tools"] = CALENDAR_TOOLS
+        create_kwargs["tool_choice"] = "auto"
 
-        # Tool-use loop — runs until the model stops requesting tool calls
+    try:
+        response = client.chat.completions.create(messages=messages, **create_kwargs)
+
+        # Tool-use loop — only reachable in chat mode (ask mode never returns tool_calls)
         while response.choices[0].finish_reason == "tool_calls":
             tool_calls = response.choices[0].message.tool_calls
             messages.append(response.choices[0].message)
@@ -405,13 +433,7 @@ async def chat(req: ChatRequest):
                     "content": result,
                 })
 
-            response = client.chat.completions.create(
-                model=req.model,
-                messages=messages,
-                tools=CALENDAR_TOOLS,
-                tool_choice="auto",
-                temperature=req.temperature,
-            )
+            response = client.chat.completions.create(messages=messages, **create_kwargs)
 
         if response.usage:
             prompt_tokens     += response.usage.prompt_tokens

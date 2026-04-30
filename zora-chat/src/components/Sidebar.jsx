@@ -1,20 +1,22 @@
 'use client';
 
-import { MessageSquarePlus, Trash2, Settings, X, Sparkles, Bot, BookOpen } from 'lucide-react';
+import { MessageSquarePlus, Trash2, Settings, X, Sparkles, Bot, BookOpen, CalendarDays } from 'lucide-react';
 
 const NAV_ITEMS = [
-  { id: 'new-chat',        label: 'Chat',            icon: MessageSquarePlus, action: 'goToChat'       },
-  { id: 'clear',           label: 'Clear Chat',      icon: Trash2,            action: 'clearChat'      },
+  { id: 'new-chat',       label: 'Chat',            icon: MessageSquarePlus, action: 'goToChat'       },
+  { id: 'clear',          label: 'Clear Chat',      icon: Trash2,            action: 'clearChat'      },
   { id: 'knowledge-base', label: 'Knowledge Base',  icon: BookOpen,          action: 'knowledgeBase'  },
+  { id: 'calendar',       label: 'Calendar',        icon: CalendarDays,      action: 'calendar'       },
   { id: 'settings',       label: 'Settings',        icon: Settings,          action: 'settings'       },
 ];
 
-export default function Sidebar({ activeView, chatTitle, onGoToChat, onNewChat, onClearChat, onOpenSettings, onOpenKnowledgeBase, isOpen, onClose }) {
+export default function Sidebar({ activeView, chatTitle, onGoToChat, onNewChat, onClearChat, onOpenSettings, onOpenKnowledgeBase, onOpenCalendar, isOpen, onClose }) {
   const dispatch = (action) => {
     if (action === 'goToChat')       onGoToChat();
     if (action === 'clearChat')      onClearChat();
     if (action === 'settings')       onOpenSettings();
     if (action === 'knowledgeBase')  onOpenKnowledgeBase();
+    if (action === 'calendar')       onOpenCalendar();
   };
 
   return (
@@ -65,6 +67,7 @@ export default function Sidebar({ activeView, chatTitle, onGoToChat, onNewChat, 
           const isActive =
             (item.action === 'settings'       && activeView === 'settings')       ||
             (item.action === 'knowledgeBase'  && activeView === 'knowledge-base') ||
+            (item.action === 'calendar'       && activeView === 'calendar')       ||
             (item.action === 'goToChat'       && activeView === 'chat');
 
           return (

@@ -1,17 +1,45 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Sparkles } from 'lucide-react';
+import { Sparkles, Volume2, VolumeX } from 'lucide-react';
+
+function stripMarkdown(text) {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`{1,3}[^`]*`{1,3}/g, '')
+    .replace(/#{1,6}\s/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^[-*]\s/gm, '')
+    .replace(/---/g, '')
+    .trim();
+}
 
 export default function MessageBubble({ message }) {
   const [showTimestamp, setShowTimestamp] = useState(false);
+  const [isSpeaking, setIsSpeaking]       = useState(false);
   const isUser = message.role === 'user';
 
   const time = message.timestamp
     ? new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : '';
+
+  const toggleSpeak = useCallback(() => {
+    if (!window.speechSynthesis) return;
+    if (isSpeaking) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(stripMarkdown(message.content));
+    utterance.lang = 'en-US';
+    utterance.onend   = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
+    window.speechSynthesis.speak(utterance);
+    setIsSpeaking(true);
+  }, [isSpeaking, message.content]);
 
   return (
     <div
@@ -53,18 +81,27 @@ export default function MessageBubble({ message }) {
           </div>
         </div>
 
-        {/* Timestamp — fades in on hover */}
-        <span
-          className="text-xs mt-1 px-1 transition-opacity duration-200"
-          style={{
-            color:   'var(--text-muted)',
-            opacity: showTimestamp ? 1 : 0,
-          }}
+        {/* Timestamp + speak button — fade in on hover */}
+        <div
+          className="flex items-center gap-2 mt-1 px-1 transition-opacity duration-200"
+          style={{ opacity: showTimestamp ? 1 : 0 }}
           aria-hidden={!showTimestamp}
-          suppressHydrationWarning
         >
-          {time}
-        </span>
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }} suppressHydrationWarning>
+            {time}
+          </span>
+          {!isUser && (
+            <button
+              onClick={toggleSpeak}
+              aria-label={isSpeaking ? 'Stop speaking' : 'Read aloud'}
+              title={isSpeaking ? 'Stop' : 'Read aloud'}
+              className="flex items-center justify-center w-5 h-5 rounded-md transition-colors"
+              style={{ color: isSpeaking ? 'var(--accent)' : 'var(--text-muted)' }}
+            >
+              {isSpeaking ? <VolumeX size={13} strokeWidth={2} /> : <Volume2 size={13} strokeWidth={2} />}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

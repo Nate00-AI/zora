@@ -1,9 +1,9 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { ArrowUp, BookOpen, Mic, MicOff } from 'lucide-react';
+import { ArrowUp, BookOpen, Mic, MicOff, MessageSquare, CalendarDays } from 'lucide-react';
 
-export default function MessageInput({ onSend, disabled, ragEnabled, onToggleRag, docCount = 0 }) {
+export default function MessageInput({ onSend, disabled, ragEnabled, onToggleRag, docCount = 0, chatMode = 'chat', onToggleMode }) {
   const [value, setValue]         = useState('');
   const [isListening, setIsListening] = useState(false);
   const textareaRef               = useRef(null);
@@ -90,6 +90,22 @@ export default function MessageInput({ onSend, disabled, ragEnabled, onToggleRag
             boxShadow:   '0 2px 10px rgba(0,0,0,0.06)',
           }}
         >
+          {/* Mode toggle button */}
+          <button
+            type="button"
+            onClick={onToggleMode}
+            aria-label={chatMode === 'ask' ? 'Switch to Chat mode' : 'Switch to Ask mode'}
+            title={chatMode === 'ask' ? 'Ask mode — calendar tools disabled. Click to enable.' : 'Chat mode — calendar tools active. Click for Ask mode.'}
+            className="flex items-center justify-center w-8 h-8 rounded-xl transition-all duration-150 shrink-0"
+            style={{
+              background: chatMode === 'ask' ? 'var(--accent)' : 'transparent',
+              color:      chatMode === 'ask' ? '#ffffff' : 'var(--text-secondary)',
+              border:     chatMode === 'ask' ? 'none' : '1px solid var(--border)',
+            }}
+          >
+            {chatMode === 'ask' ? <MessageSquare size={15} strokeWidth={2} /> : <CalendarDays size={15} strokeWidth={2} />}
+          </button>
+
           {/* KB toggle button */}
           <div className="relative shrink-0 mb-0.5">
             <button

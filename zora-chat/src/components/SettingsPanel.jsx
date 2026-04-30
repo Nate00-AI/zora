@@ -13,7 +13,7 @@ const ACCENT_PRESETS = [
   { label: 'Red',    value: '#ef4444' },
 ];
 
-export default function SettingsPanel({ onBack, ragEnabled, setRagEnabled, temperature = 0.7, setTemperature }) {
+export default function SettingsPanel({ onBack, ragEnabled, setRagEnabled, temperature = 0.7, setTemperature, selectedModel = 'gpt-3.5-turbo', setSelectedModel }) {
   const {
     themeMode, setThemeMode,
     accentColor, setAccentColor,
@@ -216,8 +216,28 @@ export default function SettingsPanel({ onBack, ragEnabled, setRagEnabled, tempe
           <div
             className="p-4 rounded-xl space-y-3"
             style={{ background: 'var(--bg-sidebar)', border: '1px solid var(--border)' }}
-          >
-            <div className="flex items-center justify-between">
+          >            {/* Model selector */}
+            <div>
+              <FieldLabel>AI Model</FieldLabel>
+              <select
+                value={selectedModel}
+                onChange={(e) => setSelectedModel?.(e.target.value)}
+                className="w-full mt-2 px-3 py-2 rounded-xl text-sm"
+                style={{
+                  background: 'var(--bg-primary)',
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border)',
+                  outline: 'none',
+                }}
+                aria-label="Select AI model"
+              >
+                <option value="gpt-3.5-turbo">GPT-3.5 Turbo — Fast &amp; cheap</option>
+                <option value="gpt-4o-mini">GPT-4o Mini — Balanced</option>
+                <option value="gpt-4o">GPT-4o — Most capable</option>
+              </select>
+            </div>
+
+            {/* Temperature slider */}            <div className="flex items-center justify-between">
               <FieldLabel>Temperature</FieldLabel>
               <span
                 className="text-sm font-mono font-semibold px-2 py-0.5 rounded-lg"

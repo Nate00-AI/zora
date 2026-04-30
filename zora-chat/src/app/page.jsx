@@ -15,11 +15,11 @@ const WELCOME_MESSAGE = {
   timestamp: new Date().toISOString(),
 };
 
-async function sendMessageToAPI(message, history = [], includeRag = false, temperature = 0.7, model = 'gpt-3.5-turbo') {
+async function sendMessageToAPI(message, history = [], includeRag = false, temperature = 0.7, model = 'gpt-3.5-turbo', mode = 'chat') {
   const response = await fetch('http://localhost:8000/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, history, include_rag: includeRag, temperature, model }),
+    body: JSON.stringify({ message, history, include_rag: includeRag, temperature, model, mode }),
   });
 
   if (!response.ok) {
@@ -41,6 +41,7 @@ export default function HomePage() {
   const [temperature, setTemperature]     = useState(0.7);
   const [selectedModel, setSelectedModel] = useState('gpt-3.5-turbo');
   const [calendarEvents, setCalendarEvents] = useState([]);
+  const [chatMode, setChatMode]             = useState('chat'); // 'chat' | 'ask'
 
   const chatTitle = (() => {
     const firstUser = messages.find((m) => m.role === 'user');
@@ -109,6 +110,14 @@ export default function HomePage() {
     catch { /* ignore */ }
   }, [selectedModel]);
 
+  // ── Persist chat mode ─────────────────────────────────────────────────────
+  useEffect(() => {
+    try { const s = localStorage.getItem('zora-chat-mode'); if (s) setChatMode(s); } catch { /* ignore */ }
+  }, []);
+  useEffect(() => {
+    try { localStorage.setItem('zora-chat-mode', chatMode); } catch { /* ignore */ }
+  }, [chatMode]);
+
   // ── Load RAG documents on mount ───────────────────────────────────────────
   useEffect(() => {
     fetch('http://localhost:8000/api/rag/documents')
@@ -145,7 +154,7 @@ export default function HomePage() {
         .filter((m) => m.id !== 'welcome')
         .map(({ role, content: c }) => ({ role, content: c }));
 
-      const { content: text, sources, prompt_tokens, completion_tokens, calendar_actions } = await sendMessageToAPI(content, history, ragEnabled, temperature, selectedModel);
+      const { content: text, sources, prompt_tokens, completion_tokens, calendar_actions } = await sendMessageToAPI(content, history, ragEnabled, temperature, selectedModel, chatMode);
       let botContent = text;
       if (sources && sources.length > 0) {
         botContent += `\n\n---\n*Sources: ${sources.join(', ')}*`;
@@ -243,6 +252,8 @@ export default function HomePage() {
               ragEnabled={ragEnabled}
               onToggleRag={() => setRagEnabled((v) => !v)}
               docCount={ragDocuments.length}
+              chatMode={chatMode}
+              onToggleMode={() => setChatMode((m) => m === 'chat' ? 'ask' : 'chat')}
             />
           </>
         ) : activeView === 'knowledge-base' ? (
